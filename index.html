@@ -58,12 +58,35 @@
         .status-indicator {
             position: absolute;
             top: 20px;
-            right: 20px;
+            right: 60px;
             width: 12px;
             height: 12px;
             background: #10b981;
             border-radius: 50%;
             animation: pulse 2s infinite;
+        }
+
+        .controls {
+            position: absolute;
+            top: 15px;
+            right: 15px;
+            display: flex;
+            gap: 10px;
+        }
+
+        .control-btn {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            border-radius: 8px;
+            padding: 6px 10px;
+            font-size: 12px;
+            color: white;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .control-btn:hover {
+            background: rgba(255, 255, 255, 0.3);
         }
 
         .model-selector {
@@ -89,6 +112,14 @@
         .model-selector select option {
             background: #6366f1;
             color: white;
+        }
+
+        .message-counter {
+            position: absolute;
+            bottom: 5px;
+            right: 20px;
+            font-size: 11px;
+            opacity: 0.8;
         }
 
         @keyframes pulse {
@@ -286,6 +317,34 @@
             font-size: 14px;
         }
 
+        .warning-message {
+            color: #f59e0b;
+            background: #fffbeb;
+            border: 1px solid #fde68a;
+            padding: 12px 16px;
+            border-radius: 10px;
+            margin: 10px 0;
+            font-size: 14px;
+        }
+
+        .notification {
+            position: fixed;
+            top: 20px;
+            right: 20px;
+            background: #10b981;
+            color: white;
+            padding: 12px 20px;
+            border-radius: 10px;
+            box-shadow: 0 4px 12px rgba(0, 0, 0, 0.15);
+            transform: translateX(400px);
+            transition: transform 0.3s ease;
+            z-index: 1000;
+        }
+
+        .notification.show {
+            transform: translateX(0);
+        }
+
         @media (max-width: 768px) {
             .chat-container {
                 height: 90vh;
@@ -297,6 +356,10 @@
             }
 
             .model-selector {
+                display: none;
+            }
+
+            .controls {
                 display: none;
             }
         }
@@ -316,8 +379,15 @@
                 </select>
             </div>
             <div class="status-indicator"></div>
+            <div class="controls">
+                <button class="control-btn" id="saveBtn">💾 Save</button>
+                <button class="control-btn" id="loadBtn">📁 Load</button>
+                <button class="control-btn" id="clearBtn">🗑️ Clear</button>
+                <button class="control-btn" id="newSessionBtn">🔄 New Session</button>
+            </div>
             <h1>Claude Opus 4</h1>
             <p>AI Assistant powered by Puter.js</p>
+            <div class="message-counter" id="messageCounter">Messages: 0</div>
         </div>
         
         <div class="messages" id="messages">
@@ -348,13 +418,22 @@
                 this.isTyping = false;
                 this.conversationHistory = [];
                 this.currentModel = 'claude-opus-4';
+                this.messageCount = 0;
+                this.maxMessages = 50; // Adjust based on your needs
+                this.sessionId = this.generateSessionId();
+                this.retryCount = 0;
+                this.maxRetries = 3;
                 this.setupEventListeners();
                 this.setupAutoResize();
                 this.initializeChat();
+                this.loadSession();
+            }
+
+            generateSessionId() {
+                return 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
             }
 
             initializeChat() {
-                // Add system message to conversation history
                 this.conversationHistory = [{
                     role: 'system',
                     content: 'You are Claude Opus 4, an advanced AI assistant created by Anthropic. You are helpful, harmless, and honest. Respond naturally and conversationally.'
@@ -365,6 +444,10 @@
                 const messageInput = document.getElementById('messageInput');
                 const sendButton = document.getElementById('sendButton');
                 const modelSelect = document.getElementById('modelSelect');
+                const saveBtn = document.getElementById('saveBtn');
+                const loadBtn = document.getElementById('loadBtn');
+                const clearBtn = document.getElementById('clearBtn');
+                const newSessionBtn = document.getElementById('newSessionBtn');
 
                 sendButton.addEventListener('click', () => this.sendMessage());
                 messageInput.addEventListener('keydown', (e) => {
@@ -378,12 +461,29 @@
                     this.currentModel = e.target.value;
                     this.updateHeaderTitle();
                 });
+
+                saveBtn.addEventListener('click', () => this.saveSession());
+                loadBtn.addEventListener('click', () => this.loadSessionDialog());
+                clearBtn.addEventListener('click', () => this.clearChat());
+                newSessionBtn.addEventListener('click', () => this.startNewSession());
             }
 
             updateHeaderTitle() {
                 const header = document.querySelector('.header h1');
                 const modelName = document.getElementById('modelSelect').selectedOptions[0].text;
                 header.textContent = modelName;
+            }
+
+            updateMessageCounter() {
+                const counter = document.getElementById('messageCounter');
+                counter.textContent = `Messages: ${this.messageCount}/${this.maxMessages}`;
+                
+                if (this.messageCount >= this.maxMessages * 0.8) {
+                    counter.style.color = '#f59e0b';
+                }
+                if (this.messageCount >= this.maxMessages) {
+                    counter.style.color = '#ef4444';
+                }
             }
 
             setupAutoResize() {
@@ -400,12 +500,21 @@
                 
                 if (!message || this.isTyping) return;
 
+                // Check message limit
+                if (this.messageCount >= this.maxMessages) {
+                    this.showWarning('Message limit reached. Please start a new session or clear the chat.');
+                    return;
+                }
+
                 // Add user message to UI and conversation history
                 this.addMessage(message, 'user');
                 this.conversationHistory.push({
                     role: 'user',
                     content: message
                 });
+
+                this.messageCount++;
+                this.updateMessageCounter();
 
                 messageInput.value = '';
                 messageInput.style.height = 'auto';
@@ -414,19 +523,39 @@
                 this.setInputDisabled(true);
 
                 try {
-                    // Use streaming for better UX
-                    const response = await puter.ai.chat(this.conversationHistory, {
+                    await this.callAIWithRetry();
+                } catch (error) {
+                    this.hideTypingIndicator();
+                    if (error.message.includes('rate limit') || error.message.includes('quota')) {
+                        this.showError('Rate limit exceeded. Please wait a moment and try again, or start a new session.');
+                        this.suggestNewSession();
+                    } else {
+                        this.showError('Failed to get response: ' + error.message);
+                    }
+                    console.error('Chat error:', error);
+                } finally {
+                    this.setInputDisabled(false);
+                    this.retryCount = 0;
+                    this.saveSession(); // Auto-save after each message
+                }
+            }
+
+            async callAIWithRetry() {
+                try {
+                    // Trim conversation history if it gets too long
+                    const trimmedHistory = this.trimConversationHistory();
+                    
+                    const response = await puter.ai.chat(trimmedHistory, {
                         model: this.currentModel,
                         stream: true
                     });
 
                     this.hideTypingIndicator();
-                    const messageElement = this.addMessage('', 'bot', true); // Start with empty message
+                    const messageElement = this.addMessage('', 'bot', true);
                     const contentElement = messageElement.querySelector('.message-content');
                     
                     let fullResponse = '';
                     
-                    // Stream the response
                     for await (const part of response) {
                         if (part && part.text) {
                             fullResponse += part.text;
@@ -435,22 +564,181 @@
                         }
                     }
 
-                    // Add assistant response to conversation history
                     this.conversationHistory.push({
                         role: 'assistant',
                         content: fullResponse
                     });
 
+                    this.messageCount++;
+                    this.updateMessageCounter();
+
                 } catch (error) {
-                    this.hideTypingIndicator();
-                    this.showError('Failed to get response: ' + error.message);
-                    console.error('Chat error:', error);
-                } finally {
-                    this.setInputDisabled(false);
+                    if (this.retryCount < this.maxRetries && 
+                        (error.message.includes('rate limit') || error.message.includes('timeout'))) {
+                        this.retryCount++;
+                        this.showWarning(`Retrying... (${this.retryCount}/${this.maxRetries})`);
+                        await new Promise(resolve => setTimeout(resolve, 2000 * this.retryCount));
+                        return this.callAIWithRetry();
+                    }
+                    throw error;
                 }
             }
 
-            addMessage(content, sender, isStreaming = false) {
+            trimConversationHistory() {
+                // Keep system message and recent messages to stay within limits
+                const maxHistoryLength = 20; // Adjust based on your needs
+                if (this.conversationHistory.length <= maxHistoryLength) {
+                    return this.conversationHistory;
+                }
+
+                // Keep system message and recent messages
+                return [
+                    this.conversationHistory[0], // system message
+                    ...this.conversationHistory.slice(-maxHistoryLength + 1)
+                ];
+            }
+
+            suggestNewSession() {
+                const messagesContainer = document.getElementById('messages');
+                const suggestionDiv = document.createElement('div');
+                suggestionDiv.className = 'message bot';
+                
+                const avatar = document.createElement('div');
+                avatar.className = 'avatar';
+                avatar.textContent = 'C';
+                
+                const suggestionContent = document.createElement('div');
+                suggestionContent.className = 'message-content warning-message';
+                suggestionContent.innerHTML = `
+                    <strong>💡 Suggestion:</strong> You've reached the message limit or encountered a rate limit. 
+                    <br><br>
+                    <button onclick="chatbot.startNewSession()" style="background: #6366f1; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer; margin-right: 10px;">🔄 Start New Session</button>
+                    <button onclick="chatbot.saveSession()" style="background: #10b981; color: white; border: none; padding: 8px 16px; border-radius: 6px; cursor: pointer;">💾 Save Current Chat</button>
+                `;
+                
+                suggestionDiv.appendChild(avatar);
+                suggestionDiv.appendChild(suggestionContent);
+                messagesContainer.appendChild(suggestionDiv);
+                
+                this.scrollToBottom();
+            }
+
+            startNewSession() {
+                if (this.messageCount > 0) {
+                    this.saveSession();
+                }
+                
+                this.sessionId = this.generateSessionId();
+                this.messageCount = 0;
+                this.conversationHistory = [];
+                this.messages = [];
+                this.initializeChat();
+                this.clearMessagesUI();
+                this.updateMessageCounter();
+                this.showNotification('New session started!');
+            }
+
+            clearChat() {
+                if (confirm('Are you sure you want to clear the current chat? This will permanently delete all messages.')) {
+                    this.conversationHistory = [];
+                    this.messages = [];
+                    this.messageCount = 0;
+                    this.initializeChat();
+                    this.clearMessagesUI();
+                    this.updateMessageCounter();
+                    this.showNotification('Chat cleared!');
+                }
+            }
+
+            clearMessagesUI() {
+                const messagesContainer = document.getElementById('messages');
+                messagesContainer.innerHTML = `
+                    <div class="welcome-message">
+                        <h3>👋 Welcome to Claude Opus 4</h3>
+                        <p>I'm an advanced AI assistant powered by Puter.js. Ask me anything - I can help with analysis, coding, creative writing, and much more!</p>
+                    </div>
+                `;
+            }
+
+            saveSession() {
+                const sessionData = {
+                    id: this.sessionId,
+                    timestamp: new Date().toISOString(),
+                    model: this.currentModel,
+                    messageCount: this.messageCount,
+                    conversationHistory: this.conversationHistory,
+                    messages: this.messages
+                };
+
+                const sessions = JSON.parse(localStorage.getItem('chatSessions') || '{}');
+                sessions[this.sessionId] = sessionData;
+                localStorage.setItem('chatSessions', JSON.stringify(sessions));
+                
+                this.showNotification('Session saved!');
+            }
+
+            loadSession() {
+                // Try to load the most recent session on startup
+                const sessions = JSON.parse(localStorage.getItem('chatSessions') || '{}');
+                const sessionKeys = Object.keys(sessions);
+                
+                if (sessionKeys.length > 0) {
+                    // Load the most recent session
+                    const mostRecentKey = sessionKeys.reduce((latest, current) => {
+                        return sessions[current].timestamp > sessions[latest].timestamp ? current : latest;
+                    });
+                    
+                    this.loadSessionData(sessions[mostRecentKey]);
+                }
+            }
+
+            loadSessionDialog() {
+                const sessions = JSON.parse(localStorage.getItem('chatSessions') || '{}');
+                const sessionKeys = Object.keys(sessions);
+                
+                if (sessionKeys.length === 0) {
+                    alert('No saved sessions found.');
+                    return;
+                }
+
+                let sessionList = 'Select a session to load:\n\n';
+                sessionKeys.forEach((key, index) => {
+                    const session = sessions[key];
+                    const date = new Date(session.timestamp).toLocaleString();
+                    sessionList += `${index + 1}. ${date} - ${session.messageCount} messages (${session.model})\n`;
+                });
+
+                const selection = prompt(sessionList + '\nEnter the number of the session to load:');
+                const sessionIndex = parseInt(selection) - 1;
+                
+                if (sessionIndex >= 0 && sessionIndex < sessionKeys.length) {
+                    const selectedKey = sessionKeys[sessionIndex];
+                    this.loadSessionData(sessions[selectedKey]);
+                }
+            }
+
+            loadSessionData(sessionData) {
+                this.sessionId = sessionData.id;
+                this.messageCount = sessionData.messageCount || 0;
+                this.conversationHistory = sessionData.conversationHistory || [];
+                this.messages = sessionData.messages || [];
+                this.currentModel = sessionData.model || 'claude-opus-4';
+                
+                // Update UI
+                document.getElementById('modelSelect').value = this.currentModel;
+                this.updateHeaderTitle();
+                this.updateMessageCounter();
+                
+                // Restore messages in UI
+                this.clearMessagesUI();
+                this.messages.forEach(msg => {
+                    this.addMessage(msg.content, msg.sender, false, false);
+                });
+                
+                this.showNotification('Session loaded!');
+            }
+
+            addMessage(content, sender, isStreaming = false, saveToHistory = true) {
                 const messagesContainer = document.getElementById('messages');
                 const welcomeMessage = messagesContainer.querySelector('.welcome-message');
                 
@@ -480,7 +768,9 @@
                 
                 this.scrollToBottom();
                 
-                this.messages.push({ content, sender, timestamp: new Date() });
+                if (saveToHistory) {
+                    this.messages.push({ content, sender, timestamp: new Date() });
+                }
                 
                 return messageDiv;
             }
@@ -543,6 +833,40 @@
                 this.scrollToBottom();
             }
 
+            showWarning(message) {
+                const messagesContainer = document.getElementById('messages');
+                const warningDiv = document.createElement('div');
+                warningDiv.className = 'message bot';
+                
+                const avatar = document.createElement('div');
+                avatar.className = 'avatar';
+                avatar.textContent = 'C';
+                avatar.style.background = 'linear-gradient(135deg, #f59e0b, #d97706)';
+                
+                const warningContent = document.createElement('div');
+                warningContent.className = 'message-content warning-message';
+                warningContent.textContent = message;
+                
+                warningDiv.appendChild(avatar);
+                warningDiv.appendChild(warningContent);
+                messagesContainer.appendChild(warningDiv);
+                
+                this.scrollToBottom();
+            }
+
+            showNotification(message) {
+                const notification = document.createElement('div');
+                notification.className = 'notification';
+                notification.textContent = message;
+                document.body.appendChild(notification);
+                
+                setTimeout(() => notification.classList.add('show'), 100);
+                setTimeout(() => {
+                    notification.classList.remove('show');
+                    setTimeout(() => document.body.removeChild(notification), 300);
+                }, 3000);
+            }
+
             setInputDisabled(disabled) {
                 const messageInput = document.getElementById('messageInput');
                 const sendButton = document.getElementById('sendButton');
@@ -564,9 +888,12 @@
             }
         }
 
+        // Global reference for button onclick handlers
+        let chatbot;
+
         // Initialize the chatbot when the page loads
         document.addEventListener('DOMContentLoaded', () => {
-            new ClaudeOpus4Chatbot();
+            chatbot = new ClaudeOpus4Chatbot();
         });
     </script>
 </body>
