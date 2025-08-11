@@ -526,11 +526,15 @@
                     await this.callAIWithRetry();
                 } catch (error) {
                     this.hideTypingIndicator();
-                    if (error.message.includes('rate limit') || error.message.includes('quota')) {
+                    const errorMessage = error?.message || error?.toString() || 'Unknown error occurred';
+                    
+                    if (errorMessage.includes('rate limit') || errorMessage.includes('quota') || errorMessage.includes('429')) {
                         this.showError('Rate limit exceeded. Please wait a moment and try again, or start a new session.');
                         this.suggestNewSession();
+                    } else if (errorMessage.includes('network') || errorMessage.includes('fetch')) {
+                        this.showError('Network error. Please check your connection and try again.');
                     } else {
-                        this.showError('Failed to get response: ' + error.message);
+                        this.showError('Failed to get response: ' + errorMessage);
                     }
                     console.error('Chat error:', error);
                 } finally {
@@ -544,6 +548,10 @@
                 try {
                     // Trim conversation history if it gets too long
                     const trimmedHistory = this.trimConversationHistory();
+                    
+                    // Add some debugging
+                    console.log('Calling AI with model:', this.currentModel);
+                    console.log('History length:', trimmedHistory.length);
                     
                     const response = await puter.ai.chat(trimmedHistory, {
                         model: this.currentModel,
@@ -573,8 +581,10 @@
                     this.updateMessageCounter();
 
                 } catch (error) {
+                    const errorMessage = error?.message || error?.toString() || 'Unknown error occurred';
+                    
                     if (this.retryCount < this.maxRetries && 
-                        (error.message.includes('rate limit') || error.message.includes('timeout'))) {
+                        (errorMessage.includes('rate limit') || errorMessage.includes('timeout') || errorMessage.includes('429'))) {
                         this.retryCount++;
                         this.showWarning(`Retrying... (${this.retryCount}/${this.maxRetries})`);
                         await new Promise(resolve => setTimeout(resolve, 2000 * this.retryCount));
